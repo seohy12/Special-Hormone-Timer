@@ -1,0 +1,5 @@
+{
+  "name": "포모도로 타이머 서현",
+  "description": "A customizable Pomodoro timer with work, study, and reading modes, featuring session tracking and sound notifications.",
+  "requestFramePermissions": []
+}

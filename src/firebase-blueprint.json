@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "Session": {
+      "title": "Session",
+      "description": "A pomodoro focus session record",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The user ID of the session owner" },
+        "date": { "type": "string", "format": "date-time", "description": "ISO string of the session date" },
+        "duration": { "type": "number", "description": "Duration in minutes" },
+        "modeName": { "type": "string", "description": "Name of the pomodoro mode" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["uid", "date", "duration", "modeName"]
+    },
+    "Todo": {
+      "title": "Todo",
+      "description": "A task that when completed unlocks a reward",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "text": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "text", "completed"]
+    },
+    "Reward": {
+      "title": "Reward",
+      "description": "A reward that is unlocked upon completing a task",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "text"]
+    }
+  },
+  "firestore": {
+    "/sessions": {
+      "schema": "Session",
+      "description": "Collection of focus sessions"
+    },
+    "/todos": {
+      "schema": "Todo",
+      "description": "Collection of tasks"
+    },
+    "/rewards": {
+      "schema": "Reward",
+      "description": "Collection of rewards"
+    }
+  }
+}
