@@ -42,7 +42,10 @@ import {
   ExternalLink,
   Plus,
   Trophy,
-  X
+  X,
+  AlertTriangle,
+  Copy,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -51,6 +54,8 @@ import {
   db, 
   googleProvider, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   signOut, 
   onAuthStateChanged, 
   collection, 
@@ -62,7 +67,8 @@ import {
   Timestamp, 
   doc, 
   deleteDoc, 
-  updateDoc
+  updateDoc,
+  setDoc
 } from './firebase';
 
 import { 
@@ -210,6 +216,16 @@ export default function App() {
   });
   const [autoStartCount, setAutoStartCount] = useState<number | null>(null);
 
+  // --- Auth States ---
+  const [user, setUser] = useState<any>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [showAuthPage, setShowAuthPage] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showGuestWarning, setShowGuestWarning] = useState(false);
+  const [loginError, setLoginError] = useState<{ code: string; message: string; isUnauthorizedDomain?: boolean } | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
+  const prevUserUidRef = useRef<string | null>(null);
+
   // --- Allowed Sites (User-Added Only, Clean Slate) ---
   const [allowedSites, setAllowedSites] = useState<AllowedSite[]>(() => {
     const saved = localStorage.getItem('workspace_allowed_sites');
@@ -222,9 +238,21 @@ export default function App() {
     return saved ? JSON.parse(saved) : { title: '', date: '', enabled: false };
   });
 
-  const handleUpdateDDay = (updated: DDayConfig) => {
+  const handleUpdateDDay = async (updated: DDayConfig) => {
     setDday(updated);
-    localStorage.setItem('pomodoro_dday', JSON.stringify(updated));
+    if (user) {
+      try {
+        await setDoc(doc(db, 'user_settings', user.uid), {
+          uid: user.uid,
+          dday: updated,
+          updatedAt: Timestamp.now()
+        }, { merge: true });
+      } catch (error) {
+        console.error('Error saving D-Day to Firestore:', error);
+      }
+    } else {
+      localStorage.setItem('pomodoro_dday', JSON.stringify(updated));
+    }
   };
 
   const getDDayInfo = (targetDateStr: string) => {
@@ -261,9 +289,18 @@ export default function App() {
       const alreadyCelebrated = localStorage.getItem(storageKey);
       const passedTitle = dday.title;
 
-      // Clear D-Day from state and localStorage
-      setDday({ title: '', date: '', enabled: false });
-      localStorage.removeItem('pomodoro_dday');
+      // Clear D-Day from state and storage
+      const clearedDday: DDayConfig = { title: '', date: '', enabled: false };
+      setDday(clearedDday);
+      if (user) {
+        setDoc(doc(db, 'user_settings', user.uid), {
+          uid: user.uid,
+          dday: clearedDday,
+          updatedAt: Timestamp.now()
+        }, { merge: true }).catch((err) => console.error('Error clearing expired D-Day:', err));
+      } else {
+        localStorage.removeItem('pomodoro_dday');
+      }
 
       if (!alreadyCelebrated) {
         setCelebratedTargetTitle(passedTitle);
@@ -278,7 +315,7 @@ export default function App() {
         return () => clearTimeout(timer);
       }
     }
-  }, [dday.enabled, dday.date, dday.title]);
+  }, [dday.enabled, dday.date, dday.title, user]);
 
   // Trigger celebration confetti burst when '축하합니다!' overlay appears
   useEffect(() => {
@@ -347,12 +384,18 @@ export default function App() {
   const [newTodoText, setNewTodoText] = useState('');
   const [newRewardText, setNewRewardText] = useState('');
 
-  // --- Auth States ---
-  const [user, setUser] = useState<any>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [showAuthPage, setShowAuthPage] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [showGuestWarning, setShowGuestWarning] = useState(false);
+  const clearAccountSessionData = useCallback(() => {
+    setSessions([]);
+    setTodos([]);
+    setRewards([]);
+    setAllowedSites(DEFAULT_ALLOWED_SITES);
+    setDday({ title: '', date: '', enabled: false });
+    localStorage.removeItem('workspace_allowed_sites');
+    localStorage.removeItem('pomodoro_dday');
+    localStorage.removeItem('pomodoro_todos');
+    localStorage.removeItem('pomodoro_rewards');
+    localStorage.removeItem('pomodoro_sessions');
+  }, []);
 
   // Sync todos/rewards to localStorage for guests
   useEffect(() => {
@@ -393,17 +436,44 @@ export default function App() {
     return () => clearInterval(interval);
   }, [user]);
 
-  // --- Auth Listener ---
+  // --- Auth Listener & Redirect Result ---
   useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          setShowAuthPage(false);
+          setLoginError(null);
+        }
+      })
+      .catch((error: any) => {
+        console.error('Redirect login failed:', error);
+        if (error?.code && error.code !== 'auth/popup-closed-by-user') {
+          setLoginError({
+            code: error.code,
+            message: error.code === 'auth/unauthorized-domain'
+              ? '현재 배포된 도메인이 Firebase 승인된 도메인 목록에 등록되지 않았습니다.'
+              : error.message || '로그인에 실패했습니다.',
+            isUnauthorizedDomain: error.code === 'auth/unauthorized-domain'
+          });
+          setShowAuthPage(true);
+        }
+      });
+
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      const hadLoggedInUser = prevUserUidRef.current !== null;
+      prevUserUidRef.current = currentUser ? currentUser.uid : null;
+
       setUser(currentUser);
       setIsAuthReady(true);
       if (currentUser) {
         setShowGuestWarning(false);
+        setLoginError(null);
+      } else if (hadLoggedInUser) {
+        clearAccountSessionData();
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [clearAccountSessionData]);
 
   useEffect(() => {
     if (showGuestWarning) {
@@ -417,6 +487,7 @@ export default function App() {
   const handleLogin = async () => {
     if (isLoggingIn) return;
     setIsLoggingIn(true);
+    setLoginError(null);
     try {
       await signInWithPopup(auth, googleProvider);
       setShowAuthPage(false);
@@ -424,8 +495,31 @@ export default function App() {
       if (error.code === 'auth/popup-closed-by-user' || 
           error.code === 'auth/cancelled-popup-request') {
         console.log('Login cancelled by user');
+      } else if (error.code === 'auth/popup-blocked' || 
+                 error.code === 'auth/operation-not-supported-in-this-environment') {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectError: any) {
+          console.error('Redirect fallback failed:', redirectError);
+          setLoginError({
+            code: redirectError?.code || 'auth/redirect-failed',
+            message: redirectError?.code === 'auth/unauthorized-domain'
+              ? '현재 배포된 도메인이 Firebase 승인된 도메인 목록에 등록되지 않았습니다.'
+              : '브라우저에서 Google 로그인 창을 열 수 없습니다. 팝업 차단을 해제한 뒤 다시 시도해주세요.',
+            isUnauthorizedDomain: redirectError?.code === 'auth/unauthorized-domain'
+          });
+        }
       } else {
         console.error('Login failed:', error);
+        const isUnauthorized = error?.code === 'auth/unauthorized-domain';
+        setLoginError({
+          code: error?.code || 'auth/unknown',
+          message: isUnauthorized
+            ? '현재 배포된 도메인이 Firebase 승인된 도메인 목록에 등록되지 않았습니다.'
+            : 'Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.',
+          isUnauthorizedDomain: isUnauthorized
+        });
       }
     } finally {
       setIsLoggingIn(false);
@@ -435,9 +529,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      setSessions([]);
-      setTodos([]);
-      setRewards([]);
+      clearAccountSessionData();
     } catch (error) {
       console.error('Logout failed:', error);
     }
@@ -487,14 +579,29 @@ export default function App() {
         ...doc.data()
       } as AllowedSite));
       setAllowedSites(customSites);
-      localStorage.setItem('workspace_allowed_sites', JSON.stringify(customSites));
-    });
+    }, (err) => console.error('Error syncing allowed sites:', err));
+
+    // User Settings (Target D-Day per user account)
+    const userSettingsRef = doc(db, 'user_settings', user.uid);
+    const unsubscribeSettings = onSnapshot(userSettingsRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data?.dday) {
+          setDday(data.dday as DDayConfig);
+        } else {
+          setDday({ title: '', date: '', enabled: false });
+        }
+      } else {
+        setDday({ title: '', date: '', enabled: false });
+      }
+    }, (err) => console.error('Error syncing user settings:', err));
 
     return () => {
       unsubscribeSessions();
       unsubscribeTodos();
       unsubscribeRewards();
       unsubscribeSites();
+      unsubscribeSettings();
     };
   }, [user, isAuthReady]);
 
@@ -855,16 +962,6 @@ export default function App() {
 
   // --- Allowed Sites (User-Added Only) Handlers ---
   const handleAddAllowedSite = async (newSiteData: Omit<AllowedSite, 'id'>) => {
-    const newSite: AllowedSite = {
-      id: 'site-' + Date.now(),
-      ...newSiteData,
-      createdAt: new Date().toISOString()
-    };
-
-    const updated = [...allowedSites, newSite];
-    setAllowedSites(updated);
-    localStorage.setItem('workspace_allowed_sites', JSON.stringify(updated));
-
     if (user) {
       try {
         await addDoc(collection(db, 'allowed_sites'), {
@@ -875,16 +972,19 @@ export default function App() {
       } catch (e) {
         console.error('Error saving allowed site to Firestore:', e);
       }
+    } else {
+      const newSite: AllowedSite = {
+        id: 'site-' + Date.now(),
+        ...newSiteData,
+        createdAt: new Date().toISOString()
+      };
+      const updated = [...allowedSites, newSite];
+      setAllowedSites(updated);
+      localStorage.setItem('workspace_allowed_sites', JSON.stringify(updated));
     }
   };
 
   const handleUpdateAllowedSite = async (id: string, updatedData: Omit<AllowedSite, 'id'>) => {
-    const updated = allowedSites.map(s =>
-      s.id === id ? { ...s, ...updatedData } : s
-    );
-    setAllowedSites(updated);
-    localStorage.setItem('workspace_allowed_sites', JSON.stringify(updated));
-
     if (user) {
       try {
         await updateDoc(doc(db, 'allowed_sites', id), {
@@ -893,20 +993,26 @@ export default function App() {
       } catch (e) {
         console.error('Error updating allowed site in Firestore:', e);
       }
+    } else {
+      const updated = allowedSites.map(s =>
+        s.id === id ? { ...s, ...updatedData } : s
+      );
+      setAllowedSites(updated);
+      localStorage.setItem('workspace_allowed_sites', JSON.stringify(updated));
     }
   };
 
   const handleDeleteAllowedSite = async (id: string) => {
-    const updated = allowedSites.filter(s => s.id !== id);
-    setAllowedSites(updated);
-    localStorage.setItem('workspace_allowed_sites', JSON.stringify(updated));
-
     if (user) {
       try {
         await deleteDoc(doc(db, 'allowed_sites', id));
       } catch (e) {
         console.error('Error deleting allowed site from Firestore:', e);
       }
+    } else {
+      const updated = allowedSites.filter(s => s.id !== id);
+      setAllowedSites(updated);
+      localStorage.setItem('workspace_allowed_sites', JSON.stringify(updated));
     }
   };
 
@@ -930,12 +1036,13 @@ export default function App() {
 
   // --- Render Auth Modal Page ---
   if (showAuthPage && !user) {
+    const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
     return (
       <div className="min-h-screen bg-[#f5f5f5] text-[#1a1a1a] font-sans flex flex-col items-center justify-center p-6">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-md bg-white rounded-[40px] p-12 shadow-xl border border-black/5 text-center"
+          className="w-full max-w-md bg-white rounded-[40px] p-10 sm:p-12 shadow-xl border border-black/5 text-center"
         >
           <div className="w-20 h-20 bg-black rounded-3xl flex items-center justify-center text-white mx-auto mb-8 shadow-lg">
             <Bell size={40} />
@@ -959,10 +1066,54 @@ export default function App() {
               )}
               Google 계정으로 로그인
             </button>
+
+            {loginError && (
+              <div className="text-left p-4 rounded-2xl bg-red-50 border border-red-200/80 text-xs text-red-900 space-y-2.5">
+                <div className="flex items-start gap-2 font-bold text-red-700">
+                  <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+                  <span>{loginError.isUnauthorizedDomain ? '배포 도메인 승인이 필요합니다' : '로그인에 실패했습니다'}</span>
+                </div>
+                <p className="text-red-800/80 leading-relaxed">
+                  {loginError.message}
+                </p>
+                {loginError.isUnauthorizedDomain && currentHostname && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white border border-red-200 font-mono text-[11px] text-neutral-800">
+                      <span className="truncate">{currentHostname}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(currentHostname);
+                          setCopiedDomain(true);
+                          setTimeout(() => setCopiedDomain(false), 2000);
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-sans font-semibold shrink-0 transition-colors"
+                      >
+                        {copiedDomain ? <Check size={12} /> : <Copy size={12} />}
+                        {copiedDomain ? '복사됨' : '복사'}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-red-800/75 leading-relaxed">
+                      Firebase Console &gt; Authentication &gt; 설정 &gt; <strong>승인된 도메인</strong>에 위 도메인을 추가해주세요.
+                    </p>
+                    <a
+                      href="https://console.firebase.google.com/project/gen-lang-client-0316808971/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 font-bold text-red-700 hover:text-red-900 underline underline-offset-2"
+                    >
+                      Firebase 승인된 도메인 설정 열기
+                      <ExternalLink size={12} />
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <button 
             onClick={() => {
+              setLoginError(null);
               setShowAuthPage(false);
               setShowGuestWarning(true);
             }}
@@ -1077,7 +1228,10 @@ export default function App() {
               onStartBreak={startBreak}
               onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenHistory={() => setIsHistoryOpen(true)}
-              onOpenAuth={() => setShowAuthPage(true)}
+              onOpenAuth={() => {
+                setLoginError(null);
+                setShowAuthPage(true);
+              }}
               onLogout={handleLogout}
               onAddTodo={addTodo}
               onToggleTodo={toggleTodo}
@@ -1233,6 +1387,7 @@ export default function App() {
               <button 
                 onClick={() => {
                   setShowGuestWarning(false);
+                  setLoginError(null);
                   setShowAuthPage(true);
                 }}
                 className="w-full mt-4 py-3 bg-black text-white rounded-xl text-xs font-bold hover:opacity-90 transition-all"

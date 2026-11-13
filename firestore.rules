@@ -66,6 +66,11 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    match /user_settings/{userId} {
+      allow read, delete: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && request.resource.data.uid == request.auth.uid;
+    }
+
     match /test/connection {
       allow read: if true;
     }
